@@ -105,8 +105,8 @@ proj = angr.Project(libc_path, main_opts={"base_addr": 0})
 file_struct = claripy.Concat(*[claripy.BVS("content_%#x" % x, 8*8, explicit_name=True)  for x in range(0, 0x200, 8)])
 wide_data = claripy.BVS("wide_data", 8*8, explicit_name=True)
 for name, addr, size in target_symbols:
-    if name != "_IO_wfile_overflow":
-        continue
+    # if name != "_IO_wfile_overflow":
+    #     continue
 
     print(name)
     state = proj.factory.blank_state(addr=addr)
