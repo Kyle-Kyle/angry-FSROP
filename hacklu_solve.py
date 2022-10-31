@@ -3,7 +3,7 @@ context.arch = 'amd64'
 
 ######## CONFIGURATION ##########
 TIMEOUT = 60
-MAX_STEP = 20
+MAX_STEP = 100
 _IO_vtable_check = 0x89f70
 libc_path = "./bins/libc.so.6"
 libc_symbol_path = "./bins/389d485a9793dbe873f0ea2c93e02efaa9aa3d.debug"
