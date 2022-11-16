@@ -19,8 +19,7 @@ logging.getLogger("angr.engines.successors").setLevel("ERROR")
 DEFAULT_OUTPUT_FOLDER = "./outputs"
 DEFAULT_TIMEOUT = 20
 DEFAULT_MAX_STEP = 10
-_IO_vtable_check = 0x89f70
-control_size = 0x100
+DEFAULT_CONTROL_SIZE = 0x100
 FAKE_RET_ADDR = 0x41414141
 FS_ADDR = 0x5000000
 IO_JUMP_ATTR = ["dummy", "dummy2", "finish", "overflow", "underflow", "uflow",
@@ -30,7 +29,8 @@ IO_JUMP_ATTR = ["dummy", "dummy2", "finish", "overflow", "underflow", "uflow",
 #################################
 
 class FSROP:
-    def __init__(self, libc_path, trigger_func, symbol_path, timeout=DEFAULT_TIMEOUT, max_step=DEFAULT_MAX_STEP, output_dir=DEFAULT_OUTPUT_FOLDER):
+    def __init__(self, libc_path, trigger_func, symbol_path, timeout=DEFAULT_TIMEOUT,
+                 max_step=DEFAULT_MAX_STEP, output_dir=DEFAULT_OUTPUT_FOLDER, control_size=DEFAULT_CONTROL_SIZE):
         self.output_dir = output_dir
 
         # for static analysis
@@ -42,10 +42,11 @@ class FSROP:
         self._IO_vtable_check = None
 
         # for symbolic analysis
-        self.project = angr.Project(libc_path, main_opts={"base_addr": 0})
-        self.sim_file = self.init_sim_file(self.project)
+        self.control_size = control_size
         self.timeout = timeout
         self.max_step = max_step
+        self.project = angr.Project(libc_path, main_opts={"base_addr": 0})
+        self.sim_file = self.init_sim_file(self.project)
 
         # determine the function offset in the vtable
         self.offset_map = {attr:idx*self.project.arch.bytes for idx, attr in enumerate(IO_JUMP_ATTR)}
@@ -58,8 +59,8 @@ class FSROP:
         bits = project.arch.bits
         bytes = project.arch.bytes
         if project.arch.memory_endness == "Iend_LE":
-            return claripy.Concat(*[claripy.BVS("file_%#x" % x, bits, explicit_name=True).reversed  for x in range(0, control_size, bytes)])
-        return claripy.Concat(*[claripy.BVS("file_%#x" % x, bits, explicit_name=True) for x in range(0, control_size, bytes)])
+            return claripy.Concat(*[claripy.BVS("file_%#x" % x, bits, explicit_name=True).reversed  for x in range(0, self.control_size, bytes)])
+        return claripy.Concat(*[claripy.BVS("file_%#x" % x, bits, explicit_name=True) for x in range(0, self.control_size, bytes)])
 
     def create_sim_states(self, addr, invoke_offset):
         """
@@ -176,7 +177,7 @@ class FSROP:
                 simgr.step()
                 elapsed_time = time.time() - start
                 simgr.move("active", "deadended", filter_func=lambda s: s.addr == FAKE_RET_ADDR)
-                simgr.move("active", "avoided", filter_func=lambda s: s.addr == _IO_vtable_check)
+                simgr.move("active", "avoided", filter_func=lambda s: s.addr == self._IO_vtable_check)
                 simgr.move("unconstrained", "bad", filter_func=lambda s: s.regs.pc.depth > 1)
                 simgr.move("active", "bad_addr", filter_func=lambda s: self.project.loader.find_segment_containing(s.addr) is None or s.addr < 0x1000)
                 print(f"\ntime: {elapsed_time}")
@@ -226,11 +227,14 @@ if __name__ == '__main__':
                         help="stop symbolic exploration for a path after <timeout> seconds", default=DEFAULT_TIMEOUT)
     parser.add_argument('-m', '--max-step', type=int,
                         help="stop symbolic exploration after <step> steps", default=DEFAULT_MAX_STEP)
+    parser.add_argument('-c', '--control-size', type=int,
+                        help="how many bytes are in our control", default=DEFAULT_CONTROL_SIZE)
 
     args = parser.parse_args()
 
     assert os.path.isfile(args.libc_path), f"{args.libc_path} is not a file!"
     assert os.path.isfile(args.symbol_path), f"{args.symbol_path} is not a file!"
 
-    fsrop = FSROP(args.libc_path, args.function, args.symbol_path, timeout=args.timeout, max_step=args.max_step, output_dir=args.output)
+    fsrop = FSROP(args.libc_path, args.function, args.symbol_path, timeout=args.timeout,
+                  max_step=args.max_step, output_dir=args.output, control_size=args.control_size)
     fsrop.analyze()
