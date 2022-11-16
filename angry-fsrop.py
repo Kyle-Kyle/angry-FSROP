@@ -10,10 +10,13 @@ import angr
 import claripy
 
 from pwnlib.elf import ELF
+from pwnlib.log import getLogger, console
 from angr.concretization_strategies import SimConcretizationStrategy
 
-logging.getLogger("angr.storage.memory_mixins.default_filler_mixin").setLevel("ERROR")
-logging.getLogger("angr.engines.successors").setLevel("ERROR")
+angr.loggers.disable_root_logger() # disable angr's intrusive logging behavior
+log = getLogger("FSROP")
+log.addHandler(console)
+log.setLevel("DEBUG")
 
 ######## CONFIGURATION ##########
 DEFAULT_OUTPUT_FOLDER = "./outputs"
@@ -180,8 +183,8 @@ class FSROP:
                 simgr.move("active", "avoided", filter_func=lambda s: s.addr == self._IO_vtable_check)
                 simgr.move("unconstrained", "bad", filter_func=lambda s: s.regs.pc.depth > 1)
                 simgr.move("active", "bad_addr", filter_func=lambda s: self.project.loader.find_segment_containing(s.addr) is None or s.addr < 0x1000)
-                print(f"\ntime: {elapsed_time}")
-                print(simgr)
+                log.debug(f"time: {elapsed_time}")
+                log.debug(str(simgr))
                 step += 1
                 if elapsed_time > self.timeout:
                     break
@@ -199,7 +202,7 @@ class FSROP:
         os.makedirs(self.output_dir, exist_ok=True)
 
         for name, addr, size in self.target_funcs:
-            print(name, hex(addr), hex(size))
+            log.info("trying to find a chain starting from %s...", name)
             #if name != '_IO_wdefault_xsgetn':
             #    continue
             states = self.create_sim_states(addr, self.offset)
