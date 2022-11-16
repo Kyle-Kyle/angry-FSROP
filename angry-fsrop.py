@@ -47,11 +47,11 @@ class FSROPSimConcretizationStrategy(SimConcretizationStrategy):
             bvs = [x.reversed for x in bvs]
         return claripy.Concat(*bvs)
 
-    def _concretize(self, memory, addr, **kwargs):
-        # print("concretizing", memory, addr)
+    def _concretize(self, memory, sim_addr, **kwargs):
+        # print("concretizing", memory, sim_addr)
         # the addresses have to be smaller than the max, or it will wrap around in some cases,
         # which is bad
-        addrs = memory.state.solver.eval_upto(addr, 3, extra_constraints=[addr<self.max_addr])
+        addrs = memory.state.solver.eval_upto(sim_addr, 3, extra_constraints=[sim_addr<self.max_addr])
 
         # in case the memory is heavily constrained, just return all the possible choices
         if len(addrs) < 3:
@@ -123,7 +123,6 @@ class FSROP:
         # store the symbolic file structure
         state.regs.rdi = FS_ADDR
         state.memory.store(FS_ADDR, self.sim_file)
-        #state.memory.store(FS_ADDR+0x80, claripy.BVV(0, 0x40*8))
 
         # now, concretize the vtable itself to avoid angr exploiting it by setting the vtable and invoking another handler
         # this is invoking function-specific
