@@ -1,39 +1,55 @@
+import os
 import sys
+import time
+import struct
+import pickle
+import logging
+import subprocess
+
 import angr
 import claripy
-import archinfo
-import logging
+
+from pwnlib.elf import ELF
 from angr.concretization_strategies import SimConcretizationStrategy
-from pwn import *
-context.arch = 'amd64'
 
 logging.getLogger("angr.storage.memory_mixins.default_filler_mixin").setLevel("ERROR")
 logging.getLogger("angr.engines.successors").setLevel("ERROR")
 
 ######## CONFIGURATION ##########
-TIMEOUT = 20
-MAX_STEP = 10
+DEFAULT_OUTPUT_FOLDER = "./outputs"
+DEFAULT_TIMEOUT = 20
+DEFAULT_MAX_STEP = 10
 _IO_vtable_check = 0x89f70
-libc_path = "./bins/libc.so.6"
-libc_symbol_path = "./bins/389d485a9793dbe873f0ea2c93e02efaa9aa3d.debug"
-output_dir = "hacklu_outputs"
 control_size = 0x100
 FAKE_RET_ADDR = 0x41414141
 FS_ADDR = 0x5000000
+IO_JUMP_ATTR = ["dummy", "dummy2", "finish", "overflow", "underflow", "uflow",
+          "pbackfail", "xsputn", "xsgetn", "seekoff", "seekpos", "setbuf",
+          "sync", "doallocate", "read", "write", "seek", "close", "stat",
+          "showmanyc", "imbue"]
 #################################
 
 class FSROP:
-    def __init__(self, libc_path, symbol_path):
+    def __init__(self, libc_path, trigger_func, symbol_path, timeout=DEFAULT_TIMEOUT, max_step=DEFAULT_MAX_STEP, output_dir=DEFAULT_OUTPUT_FOLDER):
+        self.output_dir = output_dir
 
         # for static analysis
         self.elf = ELF(libc_path)
+        self.libc_symbol_path = symbol_path
         self.all_funcs = []
         self.target_funcs = []
         self.vtable_ptrs = []
+        self._IO_vtable_check = None
 
         # for symbolic analysis
         self.project = angr.Project(libc_path, main_opts={"base_addr": 0})
         self.sim_file = self.init_sim_file(self.project)
+        self.timeout = timeout
+        self.max_step = max_step
+
+        # determine the function offset in the vtable
+        self.offset_map = {attr:idx*self.project.arch.bytes for idx, attr in enumerate(IO_JUMP_ATTR)}
+        self.offset = self.offset_map[trigger_func]
 
     def init_sim_file(self, project):
         """
@@ -85,8 +101,11 @@ class FSROP:
         """
         extract unique raw pointers from the vtable region
         """
+        bytes = self.project.arch.bytes
         raw_bytes = self.elf.section('__libc_IO_vtables')
-        self.vtable_ptrs = [u64(raw_bytes[i:i+8]) for i in range(0, len(raw_bytes), 8)]
+        def unpack(s):
+            return struct.unpack(self.project.arch.struct_fmt(), s)[0]
+        self.vtable_ptrs = [unpack(raw_bytes[i:i+bytes]) for i in range(0, len(raw_bytes), bytes)]
 
     def get_all_funcs(self):
         """
@@ -96,7 +115,7 @@ class FSROP:
         e = self.elf
         info = [(x, y, e.functions[x].size) for x, y in e.symbols.items() if x in e.functions]
 
-        output = subprocess.getoutput(f"readelf -W -s {libc_symbol_path}")
+        output = subprocess.getoutput(f"readelf -W -s {self.libc_symbol_path}")
         for line in output.splitlines():
             elems = line.split()
             if len(elems) != 8:
@@ -104,7 +123,7 @@ class FSROP:
             _, addr_str, size_str, _, _, _, _, sym_name = elems
             try:
                 addr = int(addr_str, 16)
-            except Exception:
+            except Exception as e:
                 continue
             size = int(size_str)
             if addr == 0:
@@ -114,6 +133,14 @@ class FSROP:
             # print(sym_name, hex(addr))
             info.append((sym_name, addr, size))
         self.all_funcs = info
+
+        # resolve the address of _IO_vtable_check
+        for x in self.all_funcs:
+            if x[0] == '_IO_vtable_check':
+                self._IO_vtable_check = x[1]
+                break
+        else:
+            raise RuntimeError("Failed to find the address of _IO_vtable_check!!!")
 
     def get_target_funcs(self):
         """
@@ -155,12 +182,12 @@ class FSROP:
                 print(f"\ntime: {elapsed_time}")
                 print(simgr)
                 step += 1
-                if elapsed_time > TIMEOUT:
+                if elapsed_time > self.timeout:
                     break
-                if step > MAX_STEP:
+                if step > self.max_step:
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            log.exception(e)
         return simgr
 
     def analyze(self):
@@ -168,17 +195,42 @@ class FSROP:
         self.get_all_funcs()
         self.get_target_funcs()
 
+        os.makedirs(self.output_dir, exist_ok=True)
+
         for name, addr, size in self.target_funcs:
             print(name, hex(addr), hex(size))
-            states = self.create_sim_states(addr, 0x60)
+            #if name != '_IO_wdefault_xsgetn':
+            #    continue
+            states = self.create_sim_states(addr, self.offset)
             simgr = self.project.factory.simgr(states, save_unconstrained=True)
             self.sim_explore(simgr)
 
             # save results if there are any
             if simgr.unconstrained:
-                with open(f"{output_dir}/{name}.pickle", 'wb') as f:
+                with open(f"{self.output_dir}/{name}.pickle", 'wb') as f:
                     pickle.dump(simgr.unconstrained, f)
 
 if __name__ == '__main__':
-    fsrop = FSROP(libc_path, libc_symbol_path)
+    import argparse
+    parser = argparse.ArgumentParser(description='Find a path to get PC-control when controlling a file structure',
+                                     usage="%(prog)s [options] <libc_path> <trigger>")
+    parser.add_argument('libc_path',
+                        help="the path to the target libc binary")
+    parser.add_argument('-f', '--function', type=str, choices=IO_JUMP_ATTR,
+                        help="specify the triggering function", required=True)
+    parser.add_argument('-o', '--output', type=str,
+                        help="path of the result folder", default=DEFAULT_OUTPUT_FOLDER)
+    parser.add_argument('-s', '--symbol-path', type=str,
+                        help="path to the libc symbol file (to assist the analysis)", required=True)
+    parser.add_argument('-t', '--timeout', type=int,
+                        help="stop symbolic exploration for a path after <timeout> seconds", default=DEFAULT_TIMEOUT)
+    parser.add_argument('-m', '--max-step', type=int,
+                        help="stop symbolic exploration after <step> steps", default=DEFAULT_MAX_STEP)
+
+    args = parser.parse_args()
+
+    assert os.path.isfile(args.libc_path), f"{args.libc_path} is not a file!"
+    assert os.path.isfile(args.symbol_path), f"{args.symbol_path} is not a file!"
+
+    fsrop = FSROP(args.libc_path, args.function, args.symbol_path, timeout=args.timeout, max_step=args.max_step, output_dir=args.output)
     fsrop.analyze()
