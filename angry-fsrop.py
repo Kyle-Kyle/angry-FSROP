@@ -31,6 +31,39 @@ IO_JUMP_ATTR = ["dummy", "dummy2", "finish", "overflow", "underflow", "uflow",
           "showmanyc", "imbue"]
 #################################
 
+class FSROPSimConcretizationStrategy(SimConcretizationStrategy):
+    def __init__(self, project, **kwargs):
+        super().__init__(**kwargs)
+        self._cnt = 0
+        self.project = project
+        self.max_addr = (1 << self.project.arch.bits) - 0x1000
+
+    def _sim_data(self, addr):
+        bits = self.project.arch.bits
+        bytes = self.project.arch.bytes
+
+        bvs = [claripy.BVS("data_%#x" % (addr+x), bits, explicit_name=True) for x in range(0, 0x200, bytes)]
+        if self.project.arch.memory_endness == "Iend_LE":
+            bvs = [x.reversed for x in bvs]
+        return claripy.Concat(*bvs)
+
+    def _concretize(self, memory, addr, **kwargs):
+        # print("concretizing", memory, addr)
+        # the addresses have to be smaller than the max, or it will wrap around in some cases,
+        # which is bad
+        addrs = memory.state.solver.eval_upto(addr, 3, extra_constraints=[addr<self.max_addr])
+
+        # in case the memory is heavily constrained, just return all the possible choices
+        if len(addrs) < 3:
+            return addrs
+
+        # it is unconstrained, then we just return our own fake pointer
+        if len(addrs) == 3:
+            self._cnt += 1
+            addr = 0x10000000 * self._cnt
+            memory.state.memory.store(addr, self._sim_data(addr))
+            return [addr]
+
 class FSROP:
     def __init__(self, libc_path, trigger_func, symbol_path, timeout=DEFAULT_TIMEOUT,
                  max_step=DEFAULT_MAX_STEP, output_dir=DEFAULT_OUTPUT_FOLDER, control_size=DEFAULT_CONTROL_SIZE):
@@ -61,9 +94,10 @@ class FSROP:
         """
         bits = project.arch.bits
         bytes = project.arch.bytes
+        bvs = [claripy.BVS("file_%#x" % x, bits, explicit_name=True) for x in range(0, self.control_size, bytes)]
         if project.arch.memory_endness == "Iend_LE":
-            return claripy.Concat(*[claripy.BVS("file_%#x" % x, bits, explicit_name=True).reversed  for x in range(0, self.control_size, bytes)])
-        return claripy.Concat(*[claripy.BVS("file_%#x" % x, bits, explicit_name=True) for x in range(0, self.control_size, bytes)])
+            bvs = [x.reversed for x in bvs]
+        return claripy.Concat(*bvs)
 
     def create_sim_states(self, addr, invoke_offset):
         """
@@ -77,6 +111,8 @@ class FSROP:
         # bootstrap an empty symbolic state first by symbolize all the registers
         state = self.project.factory.blank_state(addr=addr)
         state.options.add(angr.sim_options.SYMBOLIC_WRITE_ADDRESSES)
+        state.memory.read_strategies = [FSROPSimConcretizationStrategy(self.project)]
+        state.memory.write_strategies = [FSROPSimConcretizationStrategy(self.project)]
         reg_list = [x for x in state.arch.default_symbolic_registers if x not in ['rip', 'rsp']]
         for reg in reg_list:
             setattr(state.regs, reg, claripy.BVS(f"reg_{reg}", bits, explicit_name=True))
@@ -185,6 +221,7 @@ class FSROP:
                 simgr.move("active", "bad_addr", filter_func=lambda s: self.project.loader.find_segment_containing(s.addr) is None or s.addr < 0x1000)
                 log.debug(f"time: {elapsed_time}")
                 log.debug(str(simgr))
+                #log.debug(str(simgr.active))
                 step += 1
                 if elapsed_time > self.timeout:
                     break
@@ -203,7 +240,7 @@ class FSROP:
 
         for name, addr, size in self.target_funcs:
             log.info("trying to find a chain starting from %s...", name)
-            #if name != '_IO_wdefault_xsgetn':
+            #if name != '_IO_file_finish':
             #    continue
             states = self.create_sim_states(addr, self.offset)
             simgr = self.project.factory.simgr(states, save_unconstrained=True)
@@ -213,6 +250,7 @@ class FSROP:
             if simgr.unconstrained:
                 with open(f"{self.output_dir}/{name}.pickle", 'wb') as f:
                     pickle.dump(simgr.unconstrained, f)
+            #import IPython; IPython.embed()
 
 if __name__ == '__main__':
     import argparse
