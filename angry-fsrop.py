@@ -23,6 +23,7 @@ DEFAULT_OUTPUT_FOLDER = "./outputs"
 DEFAULT_TIMEOUT = 20
 DEFAULT_MAX_STEP = 10
 DEFAULT_CONTROL_SIZE = 0x100
+MAX_STATE_NUM = 5000
 FAKE_RET_ADDR = 0x41414141
 FS_ADDR = 0x5000000
 IO_JUMP_ATTR = ["dummy", "dummy2", "finish", "overflow", "underflow", "uflow",
@@ -124,6 +125,13 @@ class FSROP:
         state.regs.rdi = FS_ADDR
         state.memory.store(FS_ADDR, self.sim_file)
 
+        # hacklu: constrain wide_data
+        #state.memory.store(FS_ADDR+0xa0, 0x50000, endness=self.project.arch.memory_endness)
+        #state.memory.store(0x50000, claripy.BVV(0, 0x100*8))
+
+        # seccon: constrain offset 0x80-0xc0
+        #state.memory.store(FS_ADDR+0x80, claripy.BVV(0, 0x40*8))
+
         # now, concretize the vtable itself to avoid angr exploiting it by setting the vtable and invoking another handler
         # this is invoking function-specific
         vtable_sec_base = self.elf.get_section_by_name('__libc_IO_vtables').header['sh_addr']
@@ -210,7 +218,7 @@ class FSROP:
         simgr.stashes['bad_addr'] = []
         step = 0
         try:
-            while simgr.active:
+            while 0 < len(simgr.active) <= MAX_STATE_NUM:
                 start = time.time()
                 simgr.step()
                 elapsed_time = time.time() - start
@@ -221,6 +229,8 @@ class FSROP:
                 log.debug(f"time: {elapsed_time}")
                 log.debug(str(simgr))
                 #log.debug(str(simgr.active))
+                simgr.drop(stash="deadended")
+                simgr.drop(stash="bad_addr")
                 step += 1
                 if elapsed_time > self.timeout:
                     break
