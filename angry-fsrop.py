@@ -234,6 +234,8 @@ class FSROP:
                 #log.debug(str(simgr.active))
                 simgr.drop(stash="deadended")
                 simgr.drop(stash="bad_addr")
+                simgr.drop(stash="errored")
+                simgr.drop(stash="unsat")
                 step += 1
                 if elapsed_time > self.timeout:
                     break
