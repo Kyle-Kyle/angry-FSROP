@@ -224,7 +224,8 @@ class FSROP:
                 elapsed_time = time.time() - start
                 simgr.move("active", "deadended", filter_func=lambda s: s.addr == FAKE_RET_ADDR)
                 simgr.move("active", "avoided", filter_func=lambda s: s.addr == self._IO_vtable_check)
-                simgr.move("unconstrained", "bad", filter_func=lambda s: s.regs.pc.depth > 1)
+                simgr.move("unconstrained", "bad", filter_func=lambda s: s.regs.pc.depth > 1) # plain PC-control
+                simgr.move("unconstrained", "bad", filter_func=lambda s: any(x.split('_')[0] not in ['reg', 'file', 'data'] for x in s.ip.variables)) # must be our data, or it is likely some other stuff
                 simgr.move("active", "bad_addr", filter_func=lambda s: self.project.loader.find_segment_containing(s.addr) is None or s.addr < 0x1000)
                 log.debug(f"time: {elapsed_time}")
                 log.debug(str(simgr))
@@ -249,7 +250,7 @@ class FSROP:
 
         for name, addr, size in self.target_funcs:
             log.info("trying to find a chain starting from %s...", name)
-            #if name != '_IO_file_finish':
+            #if name != '_IO_file_setbuf_mmap':
             #    continue
             states = self.create_sim_states(addr, self.offset)
             simgr = self.project.factory.simgr(states, save_unconstrained=True)
