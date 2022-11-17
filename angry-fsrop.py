@@ -43,7 +43,7 @@ class FSROPSimConcretizationStrategy(SimConcretizationStrategy):
         bits = self.project.arch.bits
         bytes = self.project.arch.bytes
 
-        bvs = [claripy.BVS("data_%#x" % (addr+x), bits, explicit_name=True) for x in range(0, 0x200, bytes)]
+        bvs = [claripy.BVS("data_%#x" % (addr+x), bits, explicit_name=True) for x in range(-0x200, 0x200, bytes)]
         if self.project.arch.memory_endness == "Iend_LE":
             bvs = [x.reversed for x in bvs]
         return claripy.Concat(*bvs)
@@ -62,7 +62,9 @@ class FSROPSimConcretizationStrategy(SimConcretizationStrategy):
         if len(addrs) == 3:
             self._cnt += 1
             addr = 0x10000000 * self._cnt
-            memory.state.memory.store(addr, self._sim_data(addr))
+            # it's possible that the concretized pointer is already at an offset
+            # so we need to store something hopefully at its start
+            memory.state.memory.store(addr-0x200, self._sim_data(addr))
             return [addr]
 
 class FSROP:
@@ -250,7 +252,9 @@ class FSROP:
 
         for name, addr, size in self.target_funcs:
             log.info("trying to find a chain starting from %s...", name)
-            #if name != '_IO_file_setbuf_mmap':
+            #if 'obstack' not in name:
+            #    continue
+            #if name != '_IO_wdefault_pbackfail':
             #    continue
             states = self.create_sim_states(addr, self.offset)
             simgr = self.project.factory.simgr(states, save_unconstrained=True)
