@@ -231,11 +231,13 @@ class FSROP:
                 simgr.move("active", "bad_addr", filter_func=lambda s: self.project.loader.find_segment_containing(s.addr) is None or s.addr < 0x1000)
                 log.debug(f"time: {elapsed_time}")
                 log.debug(str(simgr))
+                #if simgr.errored:
+                #    import IPython; IPython.embed()
                 #log.debug(str(simgr.active))
                 simgr.drop(stash="deadended")
                 simgr.drop(stash="bad_addr")
-                simgr.drop(stash="errored")
                 simgr.drop(stash="unsat")
+                simgr._errored = [] # drop errored stash
                 step += 1
                 if elapsed_time > self.timeout:
                     break
